@@ -17,7 +17,7 @@ Configuration
 -------------
 
 Configuration page is available from the *Administration > Configuration >
-User accounts > IP Deny Country* menu (admin/config/people/ip-deny-country).
+User accounts > IP Deny By Country* menu (admin/config/people/ip-deny-country).
 
 On this page you can:
 
