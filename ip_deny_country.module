@@ -1,0 +1,270 @@
+<?php
+/**
+ * @file ip_deny_country.module
+ */
+
+
+/**
+ * Implements hook_config_info().
+ */
+function ip_deny_country_config_info() {
+  $prefixes['ip_deny_country.settings'] = array(
+    'label' => t('IP Deny By Country'),
+    'group' => t('Configuration'),
+  );
+  return $prefixes;
+}
+
+/**
+ * Implements hook_permission().
+ * Same as IP address blocking module
+ *
+ */
+function ip_deny_country_permission() {
+  return array(
+    'ip_deny_country settings' => array(
+      'title' => t('Administer IP Deny By Country settings')
+    ),
+  );
+}
+
+/**
+ * Implements hook_menu().
+ *
+ */
+function ip_deny_country_menu() {
+  $items = array();
+
+  $items['admin/config/people/ip-deny-country'] = array(
+    'type' => MENU_NORMAL_ITEM,
+    'title' => 'IP Deny By Country',
+    'description' => 'Manage to deny site visitors from certain countries.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => array('ip_deny_country_form'),
+    'access arguments' => array('ip_deny_country settings'),
+    'file' => 'ip_deny_country.admin.inc',
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_boot().
+ *
+ */
+function ip_deny_country_boot() {
+  $config = config('ip_deny_country.settings');
+  $access_restriction = $config->get('access_restriction');
+  if ($access_restriction == 'none') {
+    return;
+  }
+
+  $ip = check_plain(ip_address());
+
+  if (ip_deny_country_denied($ip)) {
+    $return_code = $config->get('return_code');
+    $log_enabled  = $config->get('log_enabled');
+    switch ($return_code) {
+      case 400:
+        header($_SERVER['SERVER_PROTOCOL'] . ' 400 Bad request');
+        break;
+      case 403:
+        header($_SERVER['SERVER_PROTOCOL'] . ' 403 Forbidden');
+        break;
+      case 404:
+        header($_SERVER['SERVER_PROTOCOL'] . ' 404 Not Found');
+        break;
+    }
+    if ($log_enabled) {
+      $abuse_ipdb_link = 'Check status of this IP in <a href="https://www.abuseipdb.com/check/' . $ip . '" target="_blank">AbuseIPDB</a>';
+      watchdog(
+        'ip_deny_country',
+        'Rejected request from denied country, IP: ' . $ip . '. ' . $abuse_ipdb_link,
+        NULL,
+        WATCHDOG_WARNING);
+    }
+    exit();
+  }
+}
+
+/**
+ *  Check if IP is from denied country and not localhost
+ *
+ */
+function ip_deny_country_denied (String $ip):bool {
+  $denied             = FALSE;
+  $config             = config('ip_deny_country.settings');
+  $access_restriction = $config->get('access_restriction');
+  $local_host         = array('127.0.0.1', '::1');
+  if (!in_array($ip, $local_host)) {
+    $ip_in_range = ip_deny_country_ip_in_range($ip);
+    $denied = $access_restriction == 'deny' ? $ip_in_range : !$ip_in_range;
+  }
+  return $denied;
+}
+
+/**
+ * Check if given IP exists in the selected countries CIDRs
+ * @param string $ip
+ * @return bool
+ */
+function ip_deny_country_ip_in_range(String $ip):bool {
+  $in_range  = FALSE;
+  $range     = array();
+
+  $config = config('ip_deny_country.settings');
+  $file_path = $config->get('public_files_path') . '/ip_deny_country_combined_zones/combined_zones';
+
+  if (file_exists($file_path)) {
+    $range = file($file_path, FILE_SKIP_EMPTY_LINES | FILE_IGNORE_NEW_LINES);
+  }
+  // Assuming we have an array of CIDRs, not IPs
+  foreach ($range as $_cidr) {
+    if (strpos($_cidr, '/') !== FALSE) {
+      $_ip = ip2long($ip);
+      list ($_net, $_mask) = explode('/', $_cidr, 2);
+      $_ip_net = ip2long($_net);
+      $_ip_mask = ~((1 << (32 - $_mask)) - 1);
+
+      if ($in_range = ($_ip & $_ip_mask) == ($_ip_net & $_ip_mask)) {
+        break;
+      }
+    }
+  }
+
+  return $in_range;
+}
+
+/**
+ * Combine downloaded files into new one
+ * @return bool file exists
+ */
+function ip_deny_country_combine_zones():bool {
+  $file_dir  = 'public://ip_deny_country_combined_zones';
+  $file_path = $file_dir . '/' . 'combined_zones';
+
+  if (!file_exists($file_dir)) {
+    backdrop_mkdir($file_dir);
+  }
+
+  $combined = '';
+  if ($wrapper = file_stream_wrapper_get_instance_by_uri('public://')) {
+    $realpath = $wrapper->realpath();
+    foreach (glob($realpath . "/ip_deny_country/*.zone") as $filename) {
+      $combined .= file_get_contents($filename);
+    }
+  }
+
+  // make backup for previous version of file
+  if (file_exists($file_path)) {
+    rename($file_path, $file_path . '.bak');
+  }
+
+  file_put_contents($file_path, $combined);
+  return file_exists($file_path);
+}
+
+/**
+ * Download zone files for selected countries provided in CIDR format by https://www.ipdeny.com/
+ *
+ * @param array $countries
+ */
+function ip_deny_country_download_files(Array $countries) {
+  $files_dir = 'public://ip_deny_country';
+  $zones_files_url = 'https://www.ipdeny.com/ipblocks/data/aggregated/';
+
+  if (!file_exists($files_dir)) {
+    backdrop_mkdir($files_dir);
+  }
+
+  $zones = 0;
+  foreach ($countries as $country) {
+    $file_name = $country . '-aggregated.zone';
+    $zone_content = file_get_contents($zones_files_url . $file_name);
+    $file_path = $files_dir . '/' . $file_name;
+    file_put_contents($file_path, $zone_content);
+    $success = file_exists($file_path);
+    if ($success) {
+      $zones = $zones + 1;
+    }
+  }
+
+  if ($zones > 0) {
+    state_set('ip_deny_country_last_download', time());
+  }
+
+  return $zones;
+}
+
+/**
+ * Remove unused zone files
+ * @return void
+ */
+
+function ip_deny_country_clean_dir() {
+  $config = config('ip_deny_country.settings');
+  $selected_countries = $config->get('selected_countries');
+  $files_dir  = 'public://ip_deny_country';
+  $selected_files = array();
+  $removed_files = 0;
+
+  if (file_exists($files_dir)) {
+    $all_files = scandir($files_dir);
+
+    if (count($all_files) > 2) {
+      if (!empty($selected_countries)) {
+        foreach ($selected_countries as $country) {
+          $selected_files[] .= $country . '-aggregated.zone';
+        }
+      }
+
+      foreach ($all_files as $file) {
+        if ($file !== '.' && $file !== '..' && !in_array($file, $selected_files)) {
+          if (backdrop_unlink($files_dir . '/' . $file)) {
+            $removed_files++;
+          }
+        }
+      }
+
+      if ($removed_files > 0) {
+        watchdog('ip_deny_country', $removed_files . t(' unused zone files have been deleted.'));
+      }
+    }
+  }
+}
+
+function ip_deny_country_update($selected_codes):bool {
+  if(empty($selected_codes)) {
+    // delete files if any, reset stat
+    ip_deny_country_clean_dir();
+    state_del('ip_deny_country_last_download');
+  }
+  else {
+    // download files, clean olds if any, combine file, set stat
+    $zones = ip_deny_country_download_files($selected_codes);
+    if ($zones > 0) {
+      ip_deny_country_clean_dir();
+    }
+    if (ip_deny_country_combine_zones()) {
+      backdrop_set_message($zones . t(' zone files have been downloaded.') );
+      watchdog('ip_deny_country',  $zones . t(' zone files have been downloaded and combined.'));
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Implementation of hook_cron().
+ */
+function ip_deny_country_cron() {
+  $config             = config('ip_deny_country.settings');
+  $selected_countries = $config->get('selected_countries');
+  $update_every       = $config->get('update_every');
+  $last_download      = state_get('ip_deny_country_last_download');
+
+  if ($update_every > 0 && !is_null($last_download)) {
+    if ((time() - $last_download) > $update_every) {
+      ip_deny_country_update($selected_countries);
+    }
+  }
+}

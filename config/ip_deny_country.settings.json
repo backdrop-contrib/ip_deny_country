@@ -1,0 +1,10 @@
+{
+    "_config_name": "ip_deny_country.settings",
+    "public_files_path": "",
+    "access_restriction": "none",
+    "selected_countries": [],
+    "update_every": 2592000,
+    "log_enabled": 1,
+    "return_code": 403
+}
+

@@ -1,0 +1,8 @@
+name = IP Deny By Country
+description = Allows you to deny access to the site to visitors from certain countries.
+package = Spam control
+backdrop = 1.x
+type = module
+
+configure = admin/config/people/ip-deny-country
+version = 1.0.1
