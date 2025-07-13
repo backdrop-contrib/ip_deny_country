@@ -5,4 +5,4 @@ backdrop = 1.x
 type = module
 
 configure = admin/config/people/ip-deny-country
-version = 1.0.1
+version = 1.0.2

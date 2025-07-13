@@ -179,12 +179,30 @@ function ip_deny_country_download_files(Array $countries) {
   $zones = 0;
   foreach ($countries as $country) {
     $file_name = $country . '-aggregated.zone';
-    $zone_content = file_get_contents($zones_files_url . $file_name);
+    $url = $zones_files_url . $file_name;
     $file_path = $files_dir . '/' . $file_name;
-    file_put_contents($file_path, $zone_content);
-    $success = file_exists($file_path);
-    if ($success) {
-      $zones = $zones + 1;
+
+    // Download to memory.
+    $zone_content = @file_get_contents($url);
+
+    if (empty($zone_content)) {
+      watchdog('ip_deny_country', 'Failed to download @url. Checking for existing zone file @file.', array('@url' => $url, '@file' => $file_path), WATCHDOG_ERROR);
+      // If no previous valid file exists, log critical error.
+      if (!file_exists($file_path) || filesize($file_path) == 0) {
+        watchdog('ip_deny_country', 'No usable zone file for @country. Blocking by country may not work!', array('@country' => $country), WATCHDOG_ERROR);
+      }
+      else {
+        watchdog('ip_deny_country', 'Reused previous file for @country: @file', array('@country' => $country, '@file' => $file_path), WATCHDOG_INFO);
+      }
+      continue;
+    }
+
+    // Only write new file if content is non-empty.
+    if (file_put_contents($file_path, $zone_content)) {
+      $zones++;
+    }
+    else {
+      watchdog('ip_deny_country', 'Could not write new zone file for @country: @file', array('@country' => $country, '@file' => $file_path), WATCHDOG_ERROR);
     }
   }
 
@@ -241,12 +259,18 @@ function ip_deny_country_update($selected_codes):bool {
   else {
     // download files, clean olds if any, combine file, set stat
     $zones = ip_deny_country_download_files($selected_codes);
+
     if ($zones > 0) {
       ip_deny_country_clean_dir();
+//    }
+      if (ip_deny_country_combine_zones()) {
+        backdrop_set_message($zones . t(' zone files have been downloaded.'));
+        watchdog('ip_deny_country', $zones . t(' zone files have been downloaded and combined.'));
+      }
     }
-    if (ip_deny_country_combine_zones()) {
-      backdrop_set_message($zones . t(' zone files have been downloaded.') );
-      watchdog('ip_deny_country',  $zones . t(' zone files have been downloaded and combined.'));
+    else {
+      backdrop_set_message(t('No zone files have been downloaded.'), 'warning');
+      watchdog('ip_deny_country', t('No zone files have been downloaded, so using previously combined file.'), NULL,WATCHDOG_INFO);
     }
   }
 
